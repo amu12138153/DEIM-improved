@@ -1,3 +1,54 @@
+# DEIM-improved
+
+This repository is a **research-oriented modification of [DEIMv2](https://github.com/Intellindust-AI-Lab/DEIMv2)** for multimodal fish hypoxia detection. It extends the original visual detection pipeline with water-quality information and related multimodal fusion modules.
+
+> **Upstream attribution and license note**
+>
+> The baseline files in this repository correspond to the upstream DEIMv2 state around commit [`add5bcdb499bf7b8a366bfeac1a47d3dc278de27`](https://github.com/Intellindust-AI-Lab/DEIMv2/commit/add5bcdb499bf7b8a366bfeac1a47d3dc278de27), before the upstream license change committed on **August 24, 2026**. The `LICENSE` file retained in this repository is the Apache License 2.0 file from that upstream revision.
+>
+> The upstream DEIMv2 project later changed its license. Code, model weights, or other materials taken from newer upstream revisions may be governed by different terms and should be reviewed separately before being incorporated into this repository.
+
+## Project modifications
+
+The main research modifications currently included in this repository are:
+
+* **Water-quality token encoding** for four environmental parameters, including normalization, parameter embeddings, and self-attention.
+* **Query-water cross-attention** through `WaterAwareQueryCrossAttention`, allowing object queries to incorporate global water-quality context.
+* **Visual-water cross-attention** modules for feature-level multimodal fusion.
+* **Encoder-stage water fusion** through a dedicated water-guided cross-attention module.
+* Configuration changes for multimodal training and evaluation, including optional water-quality fusion in the backbone, encoder, and decoder.
+
+Relevant implementation files include:
+
+* `engine/mynewblock/WaterQueryCrossAttention.py`
+* `engine/mynewblock/WaterVisionCrossAttention.py`
+* `engine/mynewblock/Water_encoder_crossattn.py`
+* `configs/deimv2/visdrone_pico.yml`
+
+These additions are research modifications built on top of the original DEIMv2 codebase; they should not be interpreted as authorship of the original DEIM/DEIMv2 architecture.
+
+## License and redistribution
+
+This repository retains the original copyright and attribution notices contained in the baseline source code and includes the Apache License 2.0 file associated with the referenced upstream revision.
+
+When redistributing modified source files, please retain applicable upstream copyright and attribution notices and clearly identify files that have been modified. If newer DEIMv2 code or official model weights are added later, verify the license applicable to those specific materials separately.
+
+## Acknowledgements
+
+This work is built on top of **DEIMv2** and its upstream ecosystem. We gratefully acknowledge the authors and contributors of:
+
+* [DEIMv2](https://github.com/Intellindust-AI-Lab/DEIMv2)
+* [DEIM](https://github.com/ShihuaHuang95/DEIM)
+* [D-FINE](https://github.com/Peterande/D-FINE)
+* [RT-DETR](https://github.com/lyuwenyu/RT-DETR)
+* [DINOv3](https://github.com/facebookresearch/dinov3)
+
+Please also follow the citation requirements of the original projects when using this repository in academic work.
+
+---
+
+## Upstream DEIMv2 documentation
+
 <h2 align="center">
   Real-Time Object Detection Meets DINOv3
 </h2>
