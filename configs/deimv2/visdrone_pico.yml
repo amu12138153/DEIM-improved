@@ -1,0 +1,197 @@
+__include__: [
+  'C:\Users\l\Desktop\DEIMv2-main (2)\DEIMv2-main\configs\dataset\visdrone.yml',
+  '../runtime.yml',
+  '../base/dataloader.yml',
+  '../base/deimv2.yml',
+  '../base/optimizer.yml'
+]
+
+output_dir: ./outputs/deimv2_hgnetv2_pico_coco
+
+DEIM:
+  encoder: LiteEncoder
+  decoder: DEIMTransformer
+  backbone: HGNetv2
+
+
+
+HGNetv2:
+  name: 'Pico'
+  return_idx: [ 2 ]
+  freeze_at: -1
+  freeze_norm: False
+  use_lab: True
+  pretrained: False
+  use_water_quality: False
+  water_fuse_idx: 2
+  agg: 'se'  #可以替换后面的创新改进注意力模块：{'CBAM','CAA','CDFA','ECA','GCSA','SSA','LocalAttention','CLAttention','SCSA','CASAtt','LWGA',
+               # 'LRSA','KSFA','PolaLinearAttention','LEGA','TSA','FCAttention','ASSA','DualdomainSA','RSA','GSA','CGAttention','DLKA',
+               # 'CloAttention','BiLevelRoutingAttention','RCA','ShuffleAttn','SCGA','SAA','VMMAttention','AlternatingAttention',
+               #'ConvAtt','HFP','HMHA','MALAttention','GCBAM','MSCA','DynamicSpatialAttention','CSAM','CASAB','MultiScaleAttention','AAFM','IIA',
+               #'PATConvAttention','DSPM','RCSSC'永久更新中}
+
+  #addconv: 'StripConv' #可以替换后面的创新改进卷积模块：{'StarConv','ODConv','DSConv','IDConv','DCNv2','CondConv2D','WTConv','PSConv','FFConv','RFAConv',
+                   # 'RFCAConv','RFCBAMConv','SCConv','LDConv','DEConv','TBConv','PConv','RepConv','DynamicConv',‘WFEConv'，'GBConv','GSConv',
+                   #  'MSGDConv','FADConv','FDConv','ARConv','wConv2D','MBRConv3','MBRConv5','SFSConv','SPConv','MRFAConv',
+                   # 'PATConv','StripConv','GCConv','CGHalfConv','HLKConv'永久更新中 }
+
+LiteEncoder:
+  in_channels: [512]
+  feat_strides: [16]
+  use_water_quality: False
+  # intra
+  hidden_dim: 112
+
+  # cross
+  expansion: 0.34
+  depth_mult: 0.5
+  act: 'silu'
+
+
+DEIMTransformer:
+  feat_channels: [112, 112]
+  use_water_quality: True
+  feat_strides: [16, 32]
+  hidden_dim: 112
+  num_levels: 2
+  num_points: [4, 2]
+
+  num_layers: 3
+  eval_idx: -1
+  num_queries: 200
+
+  # FFN
+  dim_feedforward: 320
+
+  # New options for DEIMv2
+  share_bbox_head: True
+  use_gateway: False
+
+# Increase to search for the optimal ema
+
+
+epoches: 200 # 120 + 4n
+
+## Our LR-Scheduler
+flat_epoch: 98    # 4 + epoch // 2, e.g., 40 = 4 + 72 / 2
+no_aug_epoch: 12
+lr_gamma: 0.5
+optimizer: #encoder
+  type: AdamW
+  params:
+    # backbone 普通参数，排除 water，也排除 norm / bn
+    -
+      params: '^(?=.*backbone)(?!.*water)(?!.*(?:norm|bn)).*$'
+      lr: 0.0001
+
+    # backbone norm / bn，排除 water
+    -
+      params: '^(?=.*backbone)(?!.*water)(?=.*(?:norm|bn)).*$'
+      lr: 0.0001
+      weight_decay: 0.
+
+    # encoder / decoder 的 norm / bn / bias，排除 water
+    -
+      params: '^(?:encoder|decoder)\.(?!.*water).*(?:norm|bn|bias).*$'
+      lr: 0.0001
+      weight_decay: 0.
+
+    # water 普通参数，排除 norm / bn / bias / scale / gamma
+    -
+      params: '^(?=.*water)(?!.*(?:norm|bn|bias|scale|gamma)).*$'
+      lr: 0.0001
+
+    # water 的 norm / bias / scale / gamma 参数
+    -
+      params: '^(?=.*water)(?=.*(?:norm|bn|bias|scale|gamma)).*$'
+      lr: 0.0001
+      weight_decay: 0.
+
+  lr: 0.0002
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+# optimizer: backbone
+#   type: AdamW
+#   params:
+#     # backbone 普通参数，排除 water，也排除 norm / bn
+#     -
+#       params: '^(?=.*backbone)(?!.*water)(?!.*(?:norm|bn)).*$'
+#       lr: 0.0001
+
+#     # backbone norm / bn，排除 water
+#     -
+#       params: '^(?=.*backbone)(?!.*water)(?=.*(?:norm|bn)).*$'
+#       lr: 0.0001
+#       weight_decay: 0.
+
+#     # 只匹配真正 encoder. 或 decoder. 开头的 norm / bn / bias
+#     -
+#       params: '^(?:encoder|decoder)\..*(?:norm|bn|bias).*$'
+#       lr: 0.0001
+#       weight_decay: 0.
+
+#     # water 普通参数：排除 norm / bn / bias / scale / gamma
+#     -
+#       params: '^(?=.*water)(?!.*(?:norm|bn|bias|scale|gamma)).*$'
+#       lr: 0.0001
+
+#     # water 的 norm / bias / scale / gamma 参数
+#     -
+#       params: '^(?=.*water)(?=.*(?:norm|bn|bias|scale|gamma)).*$'
+#       lr: 0.0001
+#       weight_decay: 0.
+
+#   lr: 0.0002
+#   betas: [0.9, 0.999]
+#   weight_decay: 0.0001
+
+train_dataloader:
+  total_batch_size: 2
+  num_workers: 0
+  dataset:
+    transforms:
+      ops:
+        - {type: Mosaic, output_size: 320, rotation_range: 10, translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5],
+           probability: 0.0, fill_value: 0, use_cache: True, max_cached_images: 50, random_pop: True}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 8}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [640, 640], }
+        - {type: SanitizeBoundingBoxes, min_size: 8}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        epoch: [4, 98, 188]  # list
+        ops: ['Mosaic', 'RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+      mosaic_prob: 0.0
+
+  collate_fn:
+    mixup_prob: 0.0
+    mixup_epochs: [40000, 15000]
+    copyblend_prob: 0.0
+    copyblend_epochs: [40000, 15000]
+    stop_epoch: 280 # 468 + 32
+    ema_restart_decay: 0.9999
+    base_size: 640
+    base_size_repeat: ~
+
+val_dataloader:
+  total_batch_size: 2
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [640, 640], }
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+  shuffle: False
+  num_workers: 0
+
+
+DEIMCriterion:
+  losses: ['mal', 'boxes', 'local']    # , 'local'
+  use_uni_set: False
+
+  matcher:
+    matcher_change_epoch: 5400   # FIX This

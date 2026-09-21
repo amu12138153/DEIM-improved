@@ -1,0 +1,68 @@
+task: detection
+
+evaluator:
+  type: CocoEvaluator
+  iou_types: ['bbox', ]
+
+num_classes: 2
+remap_mscoco_category: False
+
+train_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: C:\Users\l\Desktop\fish_dataset622\train
+    ann_file: C:\Users\l\Desktop\fish_dataset622\train\coco_detection_train0.json
+    return_masks: False
+    sensor_csv: C:\Users\l\Desktop\fish_dataset622\train\train.csv
+    use_water_quality: True
+    transforms:
+      type: Compose
+      ops:
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [640, 640]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        name: stop_epoch
+        epoch: [4, 14, 20]
+        ops: ['Mosaic', 'RandomPhotometricDistort', 'RandomZoomOut', 'RandomIoUCrop']
+      mosaic_prob: 0.0
+  shuffle: True
+  num_workers: 0
+  drop_last: True
+  collate_fn:
+    type: BatchImageCollateFunction
+    base_size: 640
+    base_size_repeat: 20
+    stop_epoch: 280
+    ema_restart_decay: 0.9999
+    mixup_prob: 0.0
+    mixup_epochs: [0, 0]
+    copyblend_prob: 0.0
+    copyblend_epochs: [0,0]
+
+val_dataloader:
+  type: DataLoader
+  dataset:
+    type: CocoDetection
+    img_folder: C:\Users\l\Desktop\fish_dataset622\val
+    ann_file: C:\Users\l\Desktop\fish_dataset622\val\coco_detection_val0.json
+    sensor_csv: C:\Users\l\Desktop\fish_dataset622\val\val.csv
+    use_water_quality: True
+    transforms:
+      type: Compose
+      ops:
+        - {type: Resize, size: [640, 640]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+  shuffle: False
+  num_workers: 0
+  drop_last: False
+  collate_fn:
+    type: BatchImageCollateFunction
