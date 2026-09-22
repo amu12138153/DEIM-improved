@@ -1,0 +1,9 @@
+__include__: ['../visdrone_pico.yml']
+experiment_name: V3_DO_pH
+output_dir: ./outputs/V3_DO_pH
+DEIMTransformer:
+  use_water_quality: True
+  water_features: [do, ph]
+  water_self_attn: True
+  query_water_cross_attn: True
+  learnable_gate: True

@@ -1,0 +1,9 @@
+__include__: ['../visdrone_pico.yml']
+experiment_name: M1_QCA
+output_dir: ./outputs/M1_QCA
+DEIMTransformer:
+  use_water_quality: True
+  water_features: [temperature, do, ph]
+  water_self_attn: False
+  query_water_cross_attn: True
+  learnable_gate: False

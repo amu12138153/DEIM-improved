@@ -11,10 +11,10 @@ train_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: C:\Users\l\Desktop\fish_dataset622\train
-    ann_file: C:\Users\l\Desktop\fish_dataset622\train\coco_detection_train0.json
+    img_folder: C:\Users\l\Desktop\fish_dataset622_oneversion\train
+    ann_file: C:\Users\l\Desktop\fish_dataset622_oneversion\train\coco_detection_train0.json
     return_masks: False
-    sensor_csv: C:\Users\l\Desktop\fish_dataset622\train\train.csv
+    sensor_csv: C:\Users\l\Desktop\fish_dataset622_oneversion\train\train.csv
     use_water_quality: True
     transforms:
       type: Compose
@@ -51,9 +51,9 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: C:\Users\l\Desktop\fish_dataset622\val
-    ann_file: C:\Users\l\Desktop\fish_dataset622\val\coco_detection_val0.json
-    sensor_csv: C:\Users\l\Desktop\fish_dataset622\val\val.csv
+    img_folder: C:\Users\l\Desktop\fish_dataset622_oneversion\val
+    ann_file: C:\Users\l\Desktop\fish_dataset622_oneversion\val\coco_detection_val0.json
+    sensor_csv: C:\Users\l\Desktop\fish_dataset622_oneversion\val\val.csv
     use_water_quality: True
     transforms:
       type: Compose

@@ -72,9 +72,9 @@ DEIMv2 测试集评估 + 结果总结 + 错误样本/疑似标注问题自动分
        Parameters = sum(p.numel())
 
 11. GFLOPs
-    使用 THOP：
+    使用共享 calflops profiler（含 MultiheadAttention 解析计数）：
 
-       FLOPs = 2 × MACs
+       FLOPs = 2 × MACs + 已统计的逐元素运算
 
     输入尺寸默认为：
 
@@ -111,6 +111,8 @@ import argparse
 import json
 import os
 import csv
+import copy
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -181,6 +183,13 @@ def parse_args():
         help='疑似标注类别错误的高置信度阈值，默认 0.80'
     )
 
+    parser.add_argument('--split', choices=['val', 'test'], default='val',
+                        help='test requires test_dataloader or explicit test paths')
+    parser.add_argument('--ann-file', help='Explicit COCO annotation for the selected split')
+    parser.add_argument('--sensor-csv', help='Sensor CSV for an explicitly selected dataset')
+    parser.add_argument('--experiment-name', default=None)
+    parser.add_argument('--summary-dir', default=None,
+                        help='Directory for experiment_summary.json and model_profile.json')
     return parser.parse_args()
 
 
@@ -366,16 +375,32 @@ def load_everything(args):
         resume=args.resume
     )
 
+    if args.split == 'test':
+        if 'test_dataloader' in cfg.yaml_cfg:
+            cfg.yaml_cfg['val_dataloader'] = copy.deepcopy(cfg.yaml_cfg['test_dataloader'])
+        elif not (args.ann_file and args.image_dir):
+            raise ValueError('Test evaluation requires --ann-file and --image-dir, or test_dataloader in YAML')
+    if args.ann_file:
+        if not args.image_dir:
+            raise ValueError('--ann-file requires --image-dir')
+        dataset_cfg = cfg.yaml_cfg['val_dataloader']['dataset']
+        if dataset_cfg.get('use_water_quality', False) and not args.sensor_csv:
+            raise ValueError('Explicit water dataset requires --sensor-csv; do not reuse validation sensors')
+        dataset_cfg.update(ann_file=args.ann_file, img_folder=args.image_dir, sensor_csv=args.sensor_csv)
+    elif args.sensor_csv:
+        cfg.yaml_cfg['val_dataloader']['dataset']['sensor_csv'] = args.sensor_csv
+
     # --------------------------------------------------------
     # checkpoint
     # --------------------------------------------------------
 
     ckpt = torch.load(
         args.resume,
-        map_location='cpu'
+        map_location='cpu',
+        weights_only=False,
     )
 
-    if 'ema' in ckpt:
+    if ckpt.get('ema') is not None:
 
         state = ckpt['ema']['module']
 
@@ -440,7 +465,7 @@ def load_everything(args):
 
     print()
     print('=' * 70)
-    print('Validation Dataset')
+    print(f'{args.split.title()} Dataset')
     print('=' * 70)
 
     print(
@@ -661,7 +686,7 @@ def collect_predictions(
 
     print()
     print('=' * 70)
-    print('开始验证集推理')
+    print('开始评估集推理')
     print('=' * 70)
 
     for batch_idx, (
@@ -862,9 +887,7 @@ def collect_predictions(
 
             })
 
-            all_gts.append(
-                gt
-            )
+            all_gts.append(dict(gt, image_id=image_id))
 
     print(
         f'完成，共处理 '
@@ -928,184 +951,9 @@ def calculate_parameters(model):
 # GFLOPs
 # ============================================================
 
-def calculate_gflops(
-    model,
-    device,
-    imgsz=640
-):
-    """
-    使用 THOP 计算 GFLOPs。
-
-    FLOPs = 2 × MACs
-
-    输入：
-        [1, 3, imgsz, imgsz]
-    """
-
-    try:
-
-        from thop import profile
-
-    except ImportError:
-
-        print()
-        print(
-            '没有安装 thop。'
-        )
-
-        print(
-            '请运行：'
-        )
-
-        print(
-            'pip install thop'
-        )
-
-        return {
-            'GFLOPs': None,
-            'MACs': None,
-            'input_size': imgsz
-        }
-
-    model.eval()
-
-    dummy_image = torch.randn(
-        1,
-        3,
-        imgsz,
-        imgsz,
-        device=device
-    )
-
-    # --------------------------------------------------------
-    # Query-Water 的 dummy water
-    #
-    # 顺序：
-    # temperature
-    # do
-    # ph
-    # turbidity
-    # --------------------------------------------------------
-
-    water = torch.tensor(
-        [
-            25.0,
-            5.0,
-            7.0,
-            10.0
-        ],
-        dtype=torch.float32,
-        device=device
-    )
-
-    dummy_target = [{
-        'water_quality':
-            water,
-
-        'orig_size':
-            torch.tensor(
-                [
-                    imgsz,
-                    imgsz
-                ],
-                dtype=torch.int64,
-                device=device
-            ),
-
-        'image_id':
-            torch.tensor(
-                0,
-                dtype=torch.int64,
-                device=device
-            )
-    }]
-
-    try:
-
-        macs, params = profile(
-            model,
-            inputs=(
-                dummy_image,
-                dummy_target
-            ),
-            verbose=False
-        )
-
-        # THOP 输出 MACs
-        #
-        # 这里采用：
-        # FLOPs = 2 * MACs
-
-        flops = (
-            2.0
-            * float(macs)
-        )
-
-        gflops = (
-            flops
-            / 1e9
-        )
-
-        return {
-
-            'GFLOPs':
-                float(gflops),
-
-            'MACs':
-                float(macs),
-
-            'MACs_G':
-                float(
-                    macs / 1e9
-                ),
-
-            'input_size':
-                imgsz,
-
-            'FLOPs_convention':
-                'FLOPs = 2 * MACs'
-
-        }
-
-    except Exception as e:
-
-        print()
-        print('=' * 70)
-        print('GFLOPs 计算失败')
-        print('=' * 70)
-
-        print(
-            repr(e)
-        )
-
-        print(
-            'Parameters 仍然有效。'
-        )
-
-        print('=' * 70)
-
-        return {
-
-            'GFLOPs':
-                None,
-
-            'MACs':
-                None,
-
-            'MACs_G':
-                None,
-
-            'input_size':
-                imgsz,
-
-            'FLOPs_convention':
-                'FLOPs = 2 * MACs',
-
-            'error':
-                repr(e)
-
-        }
-
+def calculate_gflops(model, device, imgsz=640):
+    from get_info_param_and_flops import profile_model
+    return profile_model(model, image_size=imgsz, device=device)
 
 
 # ============================================================
@@ -2643,6 +2491,46 @@ def analyze_errors(
 # 主程序
 # ============================================================
 
+def plot_evaluation_curves(pooled, matrix, names, outdir):
+    """Reuse the existing confidence sweep and confusion counts without re-evaluation."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    p, r, scores = pooled['p'], pooled['r'], pooled['scores']
+    f1 = 2 * p * r / np.maximum(p + r, 1e-12)
+    for filename, x, y, xlabel, ylabel in [
+        ('BoxPR_curve.png', r, p, 'Recall', 'Precision'),
+        ('BoxF1_curve.png', scores, f1, 'Confidence', 'F1'),
+        ('BoxP_curve.png', scores, p, 'Confidence', 'Precision'),
+        ('BoxR_curve.png', scores, r, 'Confidence', 'Recall')]:
+        fig, ax = plt.subplots(figsize=(5.5, 4))
+        ax.plot(x, y, lw=1.4, color='#4477AA')
+        ax.set(xlabel=xlabel, ylabel=ylabel, xlim=(0, 1), ylim=(0, 1))
+        fig.tight_layout()
+        fig.savefig(Path(outdir) / filename, dpi=400)
+        plt.close(fig)
+    labels = names + ['background']
+    for normalize in (False, True):
+        data = matrix.astype(float)
+        if normalize:
+            data = np.divide(data, data.sum(axis=0, keepdims=True),
+                             out=np.zeros_like(data), where=data.sum(axis=0, keepdims=True) > 0)
+        fig, ax = plt.subplots(figsize=(6, 5))
+        im = ax.imshow(data, cmap='Blues', vmin=0, vmax=1 if normalize else None)
+        ax.set_xticks(range(len(labels)), labels, rotation=30, ha='right')
+        ax.set_yticks(range(len(labels)), labels)
+        ax.set(xlabel='True', ylabel='Predicted')
+        for i in range(len(labels)):
+            for j in range(len(labels)):
+                ax.text(j, i, f'{data[i,j]:.2f}' if normalize else str(int(data[i,j])),
+                        ha='center', va='center', color='white' if data[i,j] > data.max()/2 else 'black')
+        fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+        filename = 'confusion_matrix_normalized.png' if normalize else 'confusion_matrix.png'
+        fig.savefig(Path(outdir) / filename, dpi=400)
+        plt.close(fig)
+
+
 def main():
 
     args = parse_args()
@@ -2759,39 +2647,23 @@ def main():
         'AP@0.75': None
     }
 
-    if len(coco_results) > 0:
-        from pycocotools.coco import COCO
-        from pycocotools.cocoeval import COCOeval
-
-        gt_tmp = os.path.join(args.outdir, '_gt_tmp.json')
-        pred_tmp = os.path.join(args.outdir, '_pred_tmp.json')
-
-        with open(gt_tmp, 'w', encoding='utf-8') as f:
-            json.dump(coco_json, f, ensure_ascii=False)
-
-        with open(pred_tmp, 'w', encoding='utf-8') as f:
-            json.dump(coco_results, f, ensure_ascii=False)
-
-        coco_gt = COCO(gt_tmp)
-        coco_dt = coco_gt.loadRes(pred_tmp)
-        evaluator = COCOeval(coco_gt, coco_dt, 'bbox')
-        evaluator.evaluate()
-        evaluator.accumulate()
-        evaluator.summarize()
-
-        coco_metrics = {
-            'mAP@0.5': float(evaluator.stats[1]),
-            'mAP@0.5:0.95': float(evaluator.stats[0]),
-            'AP@0.75': float(evaluator.stats[2])
-        }
-
-        for tmp in [gt_tmp, pred_tmp]:
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+    coco_gt = COCO(ann_file)
+    if coco_results:
+        coco_dt = coco_gt.loadRes(coco_results)
     else:
-        print('警告：没有预测框，COCOeval 无法计算。')
+        coco_dt = COCO()
+        coco_dt.dataset = {'images': coco_json['images'],
+                           'categories': coco_json['categories'], 'annotations': []}
+        coco_dt.createIndex()
+    evaluator = COCOeval(coco_gt, coco_dt, 'bbox')
+    evaluator.evaluate()
+    evaluator.accumulate()
+    evaluator.summarize()
+    coco_metrics = {'mAP@0.5': float(evaluator.stats[1]),
+                    'mAP@0.5:0.95': float(evaluator.stats[0]),
+                    'AP@0.75': float(evaluator.stats[2])}
 
     # ========================================================
     # 6. Best F1 + Precision/Recall/F1
@@ -2827,6 +2699,8 @@ def main():
         best_f1_info['confidence'],
         args.iou
     )
+
+    plot_evaluation_curves(pooled, M, names, args.outdir)
 
     confusion_csv = os.path.join(args.outdir, 'confusion_matrix.csv')
     with open(confusion_csv, 'w', encoding='utf-8-sig', newline='') as f:
@@ -2870,6 +2744,7 @@ def main():
     # 9. 总结 JSON
     # ========================================================
     summary = {
+        'split': args.split,
         'checkpoint': os.path.abspath(args.resume),
         'config': os.path.abspath(args.config),
         'annotation': os.path.abspath(ann_file),
@@ -2921,6 +2796,34 @@ def main():
     with open(summary_path, 'w', encoding='utf-8') as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
+    decoder = model.decoder
+    experiment_dir = Path(args.summary_dir or args.outdir)
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    experiment = {
+        'experiment_name': args.experiment_name or cfg.yaml_cfg.get('experiment_name', Path(args.config).stem),
+        'use_water_quality': bool(decoder.use_water_quality),
+        'water_features': decoder.water_features,
+        'water_self_attn': decoder.water_self_attn,
+        'query_water_cross_attn': decoder.query_water_cross_attn,
+        'learnable_gate': decoder.learnable_gate,
+        'best_checkpoint': os.path.abspath(args.resume),
+        'split': args.split, 'annotation': os.path.abspath(ann_file),
+        'config': os.path.abspath(args.config),
+        **coco_metrics,
+        **{key: prf1[key] for key in ['Precision', 'Recall', 'F1']},
+        'Best Confidence': best_f1_info['confidence'],
+        **{key: complexity[key] for key in ['Parameters', 'Parameters_M', 'MACs', 'GMACs', 'FLOPs', 'GFLOPs']},
+        'metric_definitions': {
+            'epoch_F1': 'det_engine COCO precision-envelope Max F1 at IoU=0.5',
+            'final_PRF1': f'Original eval_curves pooled confidence sweep, then calculate_prf1 at best confidence, IoU={args.iou}',
+            'mAP': 'COCOeval bbox stats[1], stats[0], stats[2]',
+            'checkpoint_selection': 'Validation mAP@0.5:0.95; test metrics never select checkpoint',
+            'FLOPs': complexity['FLOPs_convention'],
+        },
+    }
+    (experiment_dir / 'model_profile.json').write_text(json.dumps(complexity, indent=2), encoding='utf-8')
+    (experiment_dir / 'experiment_summary.json').write_text(json.dumps(experiment, indent=2), encoding='utf-8')
+
     # ========================================================
     # 10. 最终打印
     # ========================================================
@@ -2935,6 +2838,9 @@ def main():
     print()
 
     print(f"Parameters = {parameter_info['Parameters_M']:.4f} M")
+    print(f"Parameters (exact) = {complexity['Parameters']}")
+    print(f"MACs = {complexity['MACs']}  GMACs = {complexity['GMACs']:.6f}")
+    print(f"FLOPs = {complexity['FLOPs']}")
     print(
         f"GFLOPs = {complexity['GFLOPs']:.4f}"
         if complexity['GFLOPs'] is not None

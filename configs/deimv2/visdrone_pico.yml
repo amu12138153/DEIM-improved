@@ -1,5 +1,5 @@
 __include__: [
-  'C:\Users\l\Desktop\DEIMv2-main (2)\DEIMv2-main\configs\dataset\visdrone.yml',
+  '../dataset/visdrone.yml',
   '../runtime.yml',
   '../base/dataloader.yml',
   '../base/deimv2.yml',
@@ -49,6 +49,12 @@ LiteEncoder:
 
 
 DEIMTransformer:
+  water_features: [temperature, do, ph, turbidity]
+  water_means: [27.878, 4.547, 8.069, 0.125]
+  water_stds: [0.673, 1.939, 0.229, 0.914]
+  water_self_attn: True
+  query_water_cross_attn: True
+  learnable_gate: True
   feat_channels: [112, 112]
   use_water_quality: True
   feat_strides: [16, 32]

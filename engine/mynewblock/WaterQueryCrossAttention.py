@@ -6,44 +6,87 @@ from ..core import register
 # Water Token Encoder
 # ==========================
 
+WATER_FEATURES = ('temperature', 'do', 'ph', 'turbidity')
+WATER_MEANS = (27.878, 4.547, 8.069, 0.125)
+WATER_STDS = (0.673, 1.939, 0.229, 0.914)
+
+
+def validate_water_features(features=None):
+    features = list(WATER_FEATURES if features is None else features)
+    if not features or len(set(features)) != len(features):
+        raise ValueError('water_features must be nonempty and unique')
+    if any(name not in WATER_FEATURES for name in features):
+        raise ValueError(f'water_features must be chosen from {WATER_FEATURES}')
+    return features
+
 class WaterTokenEncoder(nn.Module):
-    def __init__(self, num_params=4, embed_dim=64, num_heads=4,
-                 means = [27.878, 4.547, 8.069, 0.125], stds  = [0.673, 1.939, 0.229, 0.914], dropout=0.0):
+    def __init__(self, num_params=None, embed_dim=64, num_heads=4,
+                 means=WATER_MEANS, stds=WATER_STDS, dropout=0.0,
+                 water_features=None, water_self_attn=True):
         super().__init__()
         assert embed_dim % num_heads == 0
+        self.water_features = validate_water_features(water_features)
+        self.num_params = len(self.water_features)
+        if num_params is not None and num_params != self.num_params:
+            raise ValueError('num_params must equal len(water_features)')
+        indices = [WATER_FEATURES.index(name) for name in self.water_features]
+        means = torch.as_tensor(means, dtype=torch.float32)
+        stds = torch.as_tensor(stds, dtype=torch.float32)
+        if means.shape != (4,) or stds.shape != (4,):
+            raise ValueError('water_means/water_stds require four values in raw sensor order')
+        if not torch.isfinite(means).all() or not torch.isfinite(stds).all() or (stds <= 0).any():
+            raise ValueError('water statistics must be finite, with strictly positive stds')
+        self.register_buffer('feature_indices', torch.tensor(indices), persistent=False)
+        self.use_water_self_attn = bool(water_self_attn)
+        self.save_attention = False
+        self.last_water_self_attn = None
         self.value_encoder = nn.Sequential(
             nn.Linear(1, 16),
             nn.SiLU(),      # 去掉 inplace
             nn.Linear(16, embed_dim)
         )
-        self.param_embedding = nn.Parameter(torch.empty(num_params, embed_dim))
+        self.param_embedding = nn.Parameter(torch.empty(self.num_params, embed_dim))
         nn.init.trunc_normal_(self.param_embedding, std=0.02)
-        self.norm = nn.LayerNorm(embed_dim)
-        self.water_self_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim) if water_self_attn else None
+        self.water_self_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True) if water_self_attn else None
         # 简化的 delta_proj，去掉冗余 LayerNorm
         self.delta_proj = nn.Sequential(
             nn.Linear(embed_dim, embed_dim),
             nn.SiLU(),
             nn.Linear(embed_dim, embed_dim)
-        )
-        self.interaction_scale = nn.Parameter(torch.zeros(1))
-        self.register_buffer("mean", torch.tensor(means, dtype=torch.float32))
-        self.register_buffer("std", torch.tensor(stds, dtype=torch.float32))
+        ) if water_self_attn else None
+        self.register_parameter('interaction_scale', nn.Parameter(torch.zeros(1)) if water_self_attn else None)
+        self.register_buffer("mean", means[indices].clone())
+        self.register_buffer("std", stds[indices].clone())
+
+    def select_features(self, water):
+        """Dataset input is always raw [B,4]; compact [B,N<4] follows water_features."""
+        if water.ndim != 2:
+            raise ValueError('water must have shape [B,4] or [B,len(water_features)]')
+        if water.shape[1] == len(WATER_FEATURES):
+            return water.index_select(1, self.feature_indices)
+        if water.shape[1] != self.num_params:
+            raise ValueError(f'Expected 4 raw or {self.num_params} selected water values')
+        return water
 
     def forward(self, water):
-        water = water.float()
+        self.last_water_self_attn = None
+        water = self.select_features(water).float()
         water = (water - self.mean) / self.std
         water = torch.nan_to_num(water, nan=0.0)  # 缺失值：标准化后取0，等价于按均值填充
         water = torch.clamp(water, -5.0, 5.0)
-        water = water.unsqueeze(-1)                    # [B,4,1]
-        value_tokens = self.value_encoder(water)       # [B,4,64]
+        water = water.unsqueeze(-1)                    # [B,N,1]
+        value_tokens = self.value_encoder(water)       # [B,N,64]
         param_tokens = self.param_embedding.unsqueeze(0)
-        water_tokens = value_tokens + param_tokens     # [B,4,64]
+        water_tokens = value_tokens + param_tokens     # [B,N,64]
 
-        x = self.norm(water_tokens)
-        attn_out, _ = self.water_self_attn(x, x, x, need_weights=False)
-        delta = self.delta_proj(attn_out)
-        water_tokens = water_tokens + self.interaction_scale * delta
+        if self.use_water_self_attn:
+            x = self.norm(water_tokens)
+            attn_out, weights = self.water_self_attn(x, x, x, need_weights=self.save_attention)
+            if self.save_attention:
+                self.last_water_self_attn = weights.detach().cpu()
+            delta = self.delta_proj(attn_out)
+            water_tokens = water_tokens + self.interaction_scale * delta
         return water_tokens
     
 
@@ -165,7 +208,12 @@ class WaterAwareQueryCrossAttention(nn.Module):
         num_heads=8,
         dropout=0.0,
         ffn_ratio=4.0,
-        init_scale=0.0
+        init_scale=0.0,
+        water_features=None,
+        water_means=WATER_MEANS,
+        water_stds=WATER_STDS,
+        water_self_attn=True,
+        learnable_gate=True,
     ):
         super().__init__()
 
@@ -194,16 +242,22 @@ class WaterAwareQueryCrossAttention(nn.Module):
             nn.Dropout(dropout)
         )
 
+        self.learnable_gate = bool(learnable_gate)
+        self.save_attention = False
+        self.last_query_water_attn = None
         self.attn_scale = nn.Parameter(
             torch.zeros(1) + init_scale
-        )
+        ) if learnable_gate else 1.0
 
         self.ffn_scale = nn.Parameter(
             torch.zeros(1) + init_scale
-        )
+        ) if learnable_gate else 1.0
 
         self.water_encoder = WaterTokenEncoder(
-            num_params=4,
+            water_features=water_features,
+            water_self_attn=water_self_attn,
+            means=water_means,
+            stds=water_stds,
             embed_dim=water_dim,
             num_heads=water_heads,
             dropout=dropout
@@ -214,12 +268,14 @@ class WaterAwareQueryCrossAttention(nn.Module):
         query:
             [B, num_queries, query_dim]
 
-        water_tokens:
-            [B, 4, water_dim]
+        water:
+            [B,4] raw sensor columns or [B,N<4] selected columns
 
         return:
             [B, num_queries, query_dim]
         """
+        self.last_query_water_attn = None
+        self.water_encoder.save_attention = self.save_attention
         water_tokens = self.water_encoder(water)
         q = self.query_norm(query)
         w = self.water_norm(water_tokens)
@@ -228,9 +284,12 @@ class WaterAwareQueryCrossAttention(nn.Module):
             query=q,
             key=w,
             value=w,
-            need_weights=return_attn,
+            need_weights=return_attn or self.save_attention,
             average_attn_weights=True
         )
+
+        if self.save_attention:
+            self.last_query_water_attn = attn_weights.detach().cpu()
 
         query = query + self.attn_scale * attn_out
 

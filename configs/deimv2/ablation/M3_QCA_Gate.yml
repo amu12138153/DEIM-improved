@@ -1,0 +1,9 @@
+__include__: ['../visdrone_pico.yml']
+experiment_name: M3_QCA_Gate
+output_dir: ./outputs/M3_QCA_Gate
+DEIMTransformer:
+  use_water_quality: True
+  water_features: [temperature, do, ph]
+  water_self_attn: False
+  query_water_cross_attn: True
+  learnable_gate: True

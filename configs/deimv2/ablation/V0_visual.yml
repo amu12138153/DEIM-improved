@@ -1,0 +1,9 @@
+__include__: ['../visdrone_pico.yml']
+experiment_name: V0_visual
+output_dir: ./outputs/V0_visual
+DEIMTransformer:
+  use_water_quality: False
+  water_features: []
+  water_self_attn: False
+  query_water_cross_attn: False
+  learnable_gate: False

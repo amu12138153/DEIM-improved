@@ -41,6 +41,7 @@ class TransformerDecoderLayer(nn.Module):
                  layer_scale=None,
                  use_gateway=False,
                  use_water_quality=False,
+                 water_options=None,
                  ):
         super(TransformerDecoderLayer, self).__init__()
 
@@ -49,8 +50,11 @@ class TransformerDecoderLayer(nn.Module):
             dim_feedforward = round(layer_scale * dim_feedforward)
             d_model = round(layer_scale * d_model)
         self.use_water_quality=use_water_quality
-        if self.use_water_quality:
-            self.water_fusion=WaterAwareQueryCrossAttention(query_dim=d_model)
+        self.query_water_cross_attn = (water_options or {}).get("query_water_cross_attn", True)
+        if self.use_water_quality and self.query_water_cross_attn:
+            options = dict(water_options or {})
+            options.pop("query_water_cross_attn", None)
+            self.water_fusion = WaterAwareQueryCrossAttention(query_dim=d_model, **options)
         # self attention
         self.self_attn = nn.MultiheadAttention(d_model, n_head, dropout=dropout, batch_first=True)
         self.dropout1 = nn.Dropout(dropout)
@@ -89,35 +93,8 @@ class TransformerDecoderLayer(nn.Module):
         target2, _ = self.self_attn(q, k, value=target, attn_mask=attn_mask)
         target = target + self.dropout1(target2)
         target = self.norm1(target)
-        if self.use_water_quality and water is not None:
-
-            if not hasattr(self, "_query_water_debug_printed"):
-                print("\n========== QUERY-WATER DEBUG ==========")
-                print("query before fusion:", target.shape)
-                print("water input shape:", water.shape)
-
-            target = self.water_fusion(
-                target,
-                water
-            )
-
-            if not hasattr(self, "_query_water_debug_printed"):
-                print("query after fusion:", target.shape)
-                print("=======================================\n")
-
-                self._query_water_debug_printed = True
-
-        elif self.use_water_quality and water is None:
-
-            if not hasattr(self, "_water_none_debug_printed"):
-                print(
-                    "[Water Debug] Water is None. "
-                    "If this appears before 'Start training', "
-                    "it is probably the FLOPs profiler."
-                )
-
-                self._water_none_debug_printed = True
-
+        if self.use_water_quality and self.query_water_cross_attn and water is not None:
+            target = self.water_fusion(target, water)
 
         target2 = self.cross_attn(
             self.with_pos_embed(
@@ -288,7 +265,13 @@ class DEIMTransformer(nn.Module):
                  use_gateway=True,
                  share_bbox_head=False,
                  share_score_head=False,
-                 use_water_quality=False
+                 use_water_quality=False,
+                 water_features=None,
+                 water_means=WATER_MEANS,
+                 water_stds=WATER_STDS,
+                 water_self_attn=True,
+                 query_water_cross_attn=True,
+                 learnable_gate=True,
                  ):
         super().__init__()
         assert len(feat_channels) <= num_levels
@@ -299,6 +282,19 @@ class DEIMTransformer(nn.Module):
 
         self.hidden_dim = hidden_dim
         self.use_water_quality = use_water_quality
+        self.water_features = validate_water_features(water_features) if use_water_quality else []
+        self.water_self_attn = bool(water_self_attn and use_water_quality and query_water_cross_attn)
+        self.query_water_cross_attn = bool(query_water_cross_attn and use_water_quality)
+        self.learnable_gate = bool(learnable_gate and self.query_water_cross_attn)
+        water_options = dict(water_features=self.water_features,
+                             water_means=water_means, water_stds=water_stds,
+                             water_self_attn=self.water_self_attn,
+                             query_water_cross_attn=self.query_water_cross_attn,
+                             learnable_gate=self.learnable_gate)
+        print(f"Water features: {', '.join(self.water_features) or 'visual only'}\n"
+              f"Water Self-Attention: {self.water_self_attn}\n"
+              f"Query-Water Cross-Attention: {self.query_water_cross_attn}\n"
+              f"Learnable Gate: {self.learnable_gate}")
         scaled_dim = round(layer_scale*hidden_dim)
         self.nhead = nhead
         self.feat_strides = feat_strides
@@ -327,9 +323,9 @@ class DEIMTransformer(nn.Module):
         self.up = nn.Parameter(torch.tensor([0.5]), requires_grad=False)
         self.reg_scale = nn.Parameter(torch.tensor([reg_scale]), requires_grad=False)
         decoder_layer = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, \
-            activation, num_levels, num_points, use_water_quality=use_water_quality,cross_attn_method=cross_attn_method, use_gateway=use_gateway)
+            activation, num_levels, num_points, use_water_quality=use_water_quality,water_options=water_options,cross_attn_method=cross_attn_method, use_gateway=use_gateway)
         decoder_layer_wide = TransformerDecoderLayer(hidden_dim, nhead, dim_feedforward, dropout, \
-            activation, num_levels, num_points, use_water_quality=use_water_quality,cross_attn_method=cross_attn_method, layer_scale=layer_scale, use_gateway=use_gateway)
+            activation, num_levels, num_points, use_water_quality=use_water_quality,water_options=water_options,cross_attn_method=cross_attn_method, layer_scale=layer_scale, use_gateway=use_gateway)
         self.decoder = TransformerDecoder(hidden_dim, decoder_layer, decoder_layer_wide, num_layers, nhead,
                                           reg_max, self.reg_scale, self.up, eval_idx, layer_scale, act=activation)
       # denoising

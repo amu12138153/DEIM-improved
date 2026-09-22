@@ -14,6 +14,7 @@ import argparse
 import ast
 import json
 import re
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -85,6 +86,13 @@ def parse_json_lines(path):
             ):
                 records.append(d)
 
+    # Appended logs can contain several independent runs. Plot only the latest.
+    starts = [i for i in range(1, len(records))
+              if records[i]['epoch'] < records[i - 1]['epoch']]
+    if starts:
+        print(f'WARNING: log contains {len(starts) + 1} runs; plotting the latest run only.')
+        records = records[starts[-1]:]
+    records = list({r['epoch']: r for r in records}.values())
     records.sort(key=lambda d: d['epoch'])
 
     return records
@@ -138,9 +146,8 @@ def plot_json_records(records, out):
         dtype=float
     )
 
-    # 不再直接读取 test_f1_50_max
-    # 而是按照 YOLO 公式重新计算
-    f1 = calculate_f1(precision, recall)
+    # Use the logged COCO PR-envelope F1; no new F1 definition.
+    f1 = np.array(get("test_f1_50_max"), dtype=float)
 
     # -----------------------------------------------------
     # 创建 2×3 子图
@@ -281,6 +288,7 @@ def plot_json_records(records, out):
     valid = (
         np.isfinite(precision)
         & np.isfinite(recall)
+        & np.isfinite(f1)
     )
 
     if valid.any():
@@ -454,6 +462,35 @@ def plot_json_records(records, out):
             f'对应 Recall = '
             f'{recall[best_idx]:.4f}'
         )
+
+
+def plot_metrics_epoch(records, out):
+    """Show raw validation epoch metrics; best points are described in the legend."""
+    colors = ['#4477AA', '#228833', '#AA3377']
+    with plt.rc_context({'font.family': 'sans-serif', 'font.sans-serif': ['DejaVu Sans'],
+                         'font.size': 9, 'axes.spines.top': False,
+                         'axes.spines.right': False, 'legend.frameon': False}):
+        fig, ax = plt.subplots(figsize=(7.2, 4.2))
+        ep = np.asarray([r['epoch'] for r in records])
+        for color, (key, label) in zip(colors, [
+            ('test_map_50', 'mAP@0.5'), ('test_map_50_95', 'mAP@0.5:0.95'),
+            ('test_f1_50_max', 'F1')]):
+            values = np.asarray([r.get(key, np.nan) for r in records], dtype=float)
+            if not np.isfinite(values).any():
+                print(f'WARNING: {key} missing; curve omitted (not synthesized).')
+                continue
+            best = int(np.nanargmax(values))
+            ax.plot(ep, values, '-o', color=color, lw=1.2, ms=2,
+                    label=f'{label} (best {values[best]:.4f}, epoch {ep[best]})')
+            ax.scatter(ep[best], values[best], color=color, marker='D', s=20, zorder=4)
+        ax.set(xlabel='Epoch', ylabel='Metric Value', ylim=(0, 1))
+        ax.grid(alpha=0.15)
+        ax.legend(loc='upper center', bbox_to_anchor=(0.5, 1.3), fontsize=8)
+        fig.tight_layout()
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out, dpi=400, bbox_inches='tight')
+        plt.close(fig)
+        print(f'Saved raw epoch metrics: {out}')
 
 
 # =========================================================
@@ -755,7 +792,9 @@ def main():
         help='输出图片路径'
     )
 
+    ap.add_argument('--metrics-out', default=None, help='Default: metrics_epoch.png beside --out')
     args = ap.parse_args()
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
 
     records = parse_json_lines(
         args.log
@@ -768,6 +807,7 @@ def main():
             args.out
         )
 
+        plot_metrics_epoch(records, args.metrics_out or str(Path(args.out).with_name('metrics_epoch.png')))
         return
 
     epoch_losses, evals = parse_console_text(
